@@ -1,0 +1,79 @@
+const express = require('express');
+const cors = require('cors');
+require('dotenv').config();
+const { MongoClient, ServerApiVersion } = require('mongodb');
+
+const app = express();
+const port = process.env.PORT || 4000;
+
+// Middleware
+app.use(express.json());
+app.use(cors());
+
+// MongoDB connection
+const user = process.env.DB_USER;
+const pass = encodeURIComponent(process.env.DB_PASS); // handle special characters
+const host = process.env.DB_HOST; // e.g., cluster0.hz6ypdj.mongodb.net
+const dbName = process.env.DB_NAME || "loanDB";
+
+const uri = `mongodb+srv://${user}:${pass}@${host}/?retryWrites=true&w=majority`;
+
+const client = new MongoClient(uri, {
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  }
+});
+
+async function run() {
+  try {
+    await client.connect();
+    console.log("✅ Connected to MongoDB");
+
+    const db = client.db(dbName);
+    const loanCollection = db.collection("loans");
+
+    // POST /loans - Add new loan
+    app.post('/loans', async (req, res) => {
+      console.log("POST /loans body:", req.body); // debug: check if data arrives
+      try {
+        const result = await loanCollection.insertOne(req.body);
+        res.send({
+          success: true,
+          message: "Loan added successfully",
+          insertedId: result.insertedId
+        });
+      } catch (err) {
+        console.error("Insert Error:", err);
+        res.status(500).send({ success: false, error: err.message });
+      }
+    });
+
+// GET all loans, limited to 6
+app.get('/loans', async (req, res) => {
+  try {
+    const loans = await loanCollection.find({}).limit(6).toArray();
+    res.send(loans);
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+
+  } catch (err) {
+    console.error("❌ DB Error:", err);
+  }
+}
+
+run();
+
+// Root route
+app.get('/', (req, res) => {
+  res.send('Loan Server Running 🚀');
+});
+
+// Start server
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
