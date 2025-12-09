@@ -12,8 +12,8 @@ app.use(cors());
 
 // MongoDB connection
 const user = process.env.DB_USER;
-const pass = encodeURIComponent(process.env.DB_PASS); // handle special characters
-const host = process.env.DB_HOST; // e.g., cluster0.hz6ypdj.mongodb.net
+const pass = encodeURIComponent(process.env.DB_PASS); 
+const host = process.env.DB_HOST; 
 const dbName = process.env.DB_NAME || "loanDB";
 
 const uri = `mongodb+srv://${user}:${pass}@${host}/?retryWrites=true&w=majority`;
@@ -36,7 +36,6 @@ async function run() {
 
     // POST /loans - Add new loan
     app.post('/loans', async (req, res) => {
-      console.log("POST /loans body:", req.body); // debug: check if data arrives
       try {
         const result = await loanCollection.insertOne(req.body);
         res.send({
@@ -45,21 +44,39 @@ async function run() {
           insertedId: result.insertedId
         });
       } catch (err) {
-        console.error("Insert Error:", err);
         res.status(500).send({ success: false, error: err.message });
       }
     });
 
-// GET all loans, limited to 6
+    // GET /loans?limit=6
 app.get('/loans', async (req, res) => {
   try {
-    const loans = await loanCollection.find({}).limit(6).toArray();
+    const limit = parseInt(req.query.limit) || 0; 
+    const loans = await loanCollection.find({}).limit(limit).toArray();
     res.send(loans);
   } catch (err) {
     res.status(500).send({ error: err.message });
   }
 });
 
+
+    // GET /loans (with optional limit)
+    app.get('/loans', async (req, res) => {
+      try {
+        const limit = parseInt(req.query.limit);   // ?limit=6 হলে 6 নেবে
+        let cursor = loanCollection.find({});
+
+        if (limit) {
+          cursor = cursor.limit(limit);
+        }
+
+        const loans = await cursor.toArray();
+        res.send(loans);
+
+      } catch (err) {
+        res.status(500).send({ error: err.message });
+      }
+    });
 
   } catch (err) {
     console.error("❌ DB Error:", err);
