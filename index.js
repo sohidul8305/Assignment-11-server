@@ -60,6 +60,58 @@ app.get('/loans', async (req, res) => {
 });
 
 
+app.get('/loans', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 0;
+
+    const loans = await loanCollection
+      .find({})
+      .limit(limit)
+      .toArray();
+
+    res.send(loans);
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+// all loans load data
+app.get('/loans/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { ObjectId } = require('mongodb');
+    const loan = await loanCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!loan) {
+      return res.status(404).send({ message: "Loan not found" });
+    }
+
+    res.send(loan);
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+
+// GET loan by ID
+app.get('/loans/:id', async (req, res) => {
+  try {
+    const { ObjectId } = require('mongodb');
+    const id = req.params.id;
+
+    const loan = await loanCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!loan) return res.status(404).send({ message: "Loan not found" });
+
+    res.send(loan);
+  } catch (err) {
+    res.status(500).send({ error: err.message });
+  }
+});
+
+
+
+
     // GET /loans (with optional limit)
     app.get('/loans', async (req, res) => {
       try {
