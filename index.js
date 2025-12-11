@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { MongoClient, ObjectId, ServerApiVersion } = require('mongodb');
+const stripe = require('stripe')(process.env.ATRIPE_SECRET);
+
 
 const app = express();
 const port = process.env.PORT || 4000;
@@ -89,6 +91,26 @@ app.delete('/loans/:id', async (req, res) => {
 
   await loanCollection.deleteOne({ _id: new ObjectId(id) });
   res.send({ success: true, message: "Loan cancelled successfully" });
+});
+
+
+
+// payment related apis
+
+app.post('/create-checkout-session', async (req, res) => {
+  const session = await stripe.checkout.sessions.create({
+    line_items: [
+      {
+        // Provide the exact Price ID (for example, price_1234) of the product you want to sell
+        price: '{{PRICE_ID}}',
+        quantity: 1,
+      },
+    ],
+    mode: 'payment',
+    success_url: `${YOUR_DOMAIN}?success=true`,
+  });
+
+  res.redirect(303, session.url);
 });
 
 
