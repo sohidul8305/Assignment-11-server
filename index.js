@@ -47,34 +47,52 @@ async function run() {
     });
 
     // GET /loans → fetch loans filtered by userEmail + optional limit
-    app.get('/loans', async (req, res) => {
-      try {
-        const { userEmail, limit } = req.query;
-        const query = {};
-        if (userEmail) query.userEmail = userEmail;
+// GET /loans → filter by userEmail, return serial IDs
+// GET /loans → filter by userEmail, add serialId
+// GET /loans → fetch all loans or filter by userEmail
+app.get('/loans', async (req, res) => {
+  try {
+    const { userEmail, limit } = req.query;
+    const query = {};
 
-        let cursor = loanCollection.find(query);
-        if (limit) cursor = cursor.limit(parseInt(limit));
+    // Optional filter
+    if (userEmail) query.userEmail = userEmail;
 
-        const loans = await cursor.toArray();
-        res.send(loans);
-      } catch (err) {
-        console.error(err);
-        res.status(500).send({ message: "Server Error" });
-      }
-    });
+    let cursor = loanCollection.find(query);
 
-    // GET /loans/:id → fetch single loan by ID
-    app.get('/loans/:id', async (req, res) => {
-      try {
-        const id = req.params.id;
-        const loan = await loanCollection.findOne({ _id: new ObjectId(id) });
-        if (!loan) return res.status(404).send({ message: "Loan not found" });
-        res.send(loan);
-      } catch (err) {
-        res.status(500).send({ message: err.message });
-      }
-    });
+    // Optional limit for Allloans page
+    if (limit) cursor = cursor.limit(parseInt(limit));
+
+    const loans = await cursor.toArray();
+
+    // Add serialId for frontend display
+    const loansWithSerialId = loans.map((loan, index) => ({
+      serialId: index + 1,
+      ...loan
+    }));
+
+    res.send(loansWithSerialId);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Server Error" });
+  }
+});
+
+// dekete application
+app.delete('/loans/:id', async (req, res) => {
+  const { id } = req.params;
+  const loan = await loanCollection.findOne({ _id: new ObjectId(id) });
+
+  if (!loan) return res.status(404).send({ success: false, message: "Loan not found" });
+  if (loan.status !== "Pending") return res.status(400).send({ success: false, message: "Only Pending loans can be cancelled" });
+
+  await loanCollection.deleteOne({ _id: new ObjectId(id) });
+  res.send({ success: true, message: "Loan cancelled successfully" });
+});
+
+
+
 
   } catch (err) {
     console.error("❌ DB Error:", err);
