@@ -13,6 +13,7 @@ app.use(express.json());
 const uri = `mongodb+srv://${process.env.DB_USER}:${encodeURIComponent(
   process.env.DB_PASS
 )}@${process.env.DB_HOST}/?retryWrites=true&w=majority`;
+
 const client = new MongoClient(uri);
 let loanCollection;
 
@@ -23,56 +24,71 @@ async function run() {
 
   // CREATE LOAN
   app.post("/loan-applications", async (req, res) => {
-    const loan = {
-      ...req.body,
-      status: "Pending",
-      feeStatus: "unpaid",
-      applicationDate: new Date(),
-    };
-    const result = await loanCollection.insertOne(loan);
-    res.send({ success: true, insertedId: result.insertedId });
+    try {
+      const loan = {
+        ...req.body,
+        status: "Pending",
+        feeStatus: "unpaid",
+        applicationDate: new Date(),
+      };
+      const result = await loanCollection.insertOne(loan);
+      res.send({ success: true, insertedId: result.insertedId });
+    } catch (err) {
+      res.status(500).send({ success: false, error: err.message });
+    }
   });
 
   // GET LOANS
-  app.get("/loans", async (req, res) => {
-    const query = req.query.userEmail ? { userEmail: req.query.userEmail } : {};
-    const loans = await loanCollection.find(query).toArray();
-    res.send(loans);
-  });
+app.get("/loans", async (req, res) => {
+  const limit = parseInt(req.query.limit) || 0;
+  const loans = await loanCollection.find().limit(limit).toArray();
+  res.send(loans);
+});
+
+
+  
 
   // DELETE LOAN
   app.delete("/loans/:id", async (req, res) => {
-    await loanCollection.deleteOne({ _id: new ObjectId(req.params.id) });
-    res.send({ success: true });
+    try {
+      await loanCollection.deleteOne({ _id: new ObjectId(req.params.id) });
+      res.send({ success: true });
+    } catch (err) {
+      res.status(500).send({ success: false });
+    }
   });
 
-  // CREATE CHECKOUT SESSION
+  // CREATE STRIPE CHECKOUT SESSION
   app.post("/create-checkout-session", async (req, res) => {
-    const { loanId, loanTitle, email } = req.body;
+    try {
+      const { loanId, loanTitle, email } = req.body;
 
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      line_items: [
-        {
-          price_data: {
-            currency: "usd",
-            unit_amount: 1000, // $10
-            product_data: { name: `Loan Fee - ${loanTitle}` },
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ["card"],
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              unit_amount: 1000, // $10
+              product_data: { name: `Loan Fee - ${loanTitle}` },
+            },
+            quantity: 1,
           },
-          quantity: 1,
-        },
-      ],
-      mode: "payment",
-      customer_email: email,
-      metadata: { loanId, loanTitle },
-      success_url: `${process.env.CLIENT_URL}/myloans?success=true`,
-      cancel_url: `${process.env.CLIENT_URL}/myloans?success=false`,
-    });
+        ],
+        mode: "payment",
+        customer_email: email,
+        metadata: { loanId, loanTitle },
+        success_url: `${process.env.CLIENT_URL}/payment-success?loanId=${loanId}`,
+        cancel_url: `${process.env.CLIENT_URL}/myloans`,
+      });
 
-    res.send({ url: session.url });
+      res.send({ url: session.url });
+    } catch (err) {
+      res.status(500).send({ error: err.message });
+    }
   });
 
-  // STRIPE WEBHOOK
+  // STRIPE WEBHOOK (update feeStatus to Paid)
   app.post("/webhook", bodyParser.raw({ type: "application/json" }), async (req, res) => {
     const sig = req.headers["stripe-signature"];
     let event;
@@ -80,13 +96,12 @@ async function run() {
     try {
       event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
     } catch (err) {
-      console.log("⚠️ Webhook signature verification failed.", err.message);
+      console.log("Webhook signature failed:", err.message);
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
-
       await loanCollection.updateOne(
         { _id: new ObjectId(session.metadata.loanId) },
         {
@@ -110,6 +125,4 @@ async function run() {
 
 run();
 
-app.listen(process.env.PORT, () =>
-  console.log(`🚀 Server running on port ${process.env.PORT}`)
-);
+app.listen(process.env.PORT, () => console.log(`Server running on port ${process.env.PORT}`));
