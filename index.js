@@ -24,21 +24,68 @@ async function run() {
   console.log("✅ MongoDB connected");
 
   // CREATE LOAN
-  app.post("/loan-applications", async (req, res) => {
+// আপনার Express Server ফাইলে এই রুটটি যুক্ত করুন
+app.post("/loan-applications", async (req, res) => {
     try {
-      const loan = {
-        ...req.body,
-        status: "Pending",
-        feeStatus: "unpaid",
-        applicationDate: new Date(),
-      };
-      const result = await loanCollection.insertOne(loan);
-      res.send({ success: true, insertedId: result.insertedId });
-    } catch (err) {
-      res.status(500).send({ success: false, error: err.message });
-    }
-  });
+        // ১. কালেকশন ইনিশিয়ালাইজেশন চেক (যদি ইনিশিয়ালাইজ না হয়, তবে এটি 503 দেবে)
+        if (!loanCollection) { 
+            console.error("MongoDB Error: loanCollection is not initialized.");
+            return res.status(503).send({ success: false, message: "Database service unavailable." });
+        }
+        
+        // ২. প্রয়োজনীয় ফিল্ড চেক
+        const { userEmail, loanTitle, loanAmount } = req.body;
+        if (!userEmail || !loanTitle || !loanAmount) {
+             return res.status(400).send({ message: "Missing required fields." });
+        }
 
+        const loan = {
+            ...req.body,
+            userEmail: userEmail.toLowerCase().trim(), 
+            status: "Pending",
+            feeStatus: "unpaid",
+            applicationDate: new Date(),
+        };
+
+        const result = await loanCollection.insertOne(loan);
+        
+        if (result.insertedId) {
+            // সফল হলে 201 Created স্ট্যাটাস পাঠানো উচিত
+            res.status(201).send({ success: true, insertedId: result.insertedId, message: "Loan application saved successfully." });
+        } else {
+             res.status(500).send({ success: false, message: "Database insert operation failed unexpectedly." });
+        }
+        
+    } catch (err) {
+        console.error("Error submitting loan application:", err.message);
+        res.status(500).send({ success: false, error: "Internal Server Error." });
+    }
+});
+
+// আপনার Express Server ফাইলে এই রুটটি যুক্ত করুন
+app.get("/loan-applications", async (req, res) => {
+    try {
+        if (!loanCollection) {
+            return res.status(503).send({ message: "Database service unavailable." });
+        }
+        
+        const email = req.query.email;
+        let query = {};
+
+        if (email) {
+            // ইমেল কোয়েরি প্যারামিটার ব্যবহার করে ডেটা ফিল্টার করা হচ্ছে
+            query = { userEmail: email };
+        } 
+        // আপনি যদি কোনো Admin Route না রাখেন, তবে এটি শুধু ইউজার ইমেল ফিল্টার করবে।
+
+        const loans = await loanCollection.find(query).toArray();
+        res.send(loans);
+
+    } catch (err) {
+        console.error("Error fetching loan applications:", err.message);
+        res.status(500).send({ message: "Failed to fetch loan data." });
+    }
+});
   // GET LOANS (list)
   app.get("/loans", async (req, res) => {
     try {
