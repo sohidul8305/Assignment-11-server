@@ -25,42 +25,69 @@ async function run() {
 
   // CREATE LOAN
 // আপনার Express Server ফাইলে এই রুটটি যুক্ত করুন
-app.post("/loan-applications", async (req, res) => {
-    try {
-        // ১. কালেকশন ইনিশিয়ালাইজেশন চেক (যদি ইনিশিয়ালাইজ না হয়, তবে এটি 503 দেবে)
-        if (!loanCollection) { 
-            console.error("MongoDB Error: loanCollection is not initialized.");
-            return res.status(503).send({ success: false, message: "Database service unavailable." });
-        }
-        
-        // ২. প্রয়োজনীয় ফিল্ড চেক
-        const { userEmail, loanTitle, loanAmount } = req.body;
-        if (!userEmail || !loanTitle || !loanAmount) {
-             return res.status(400).send({ message: "Missing required fields." });
-        }
+app.patch("/loan-applications/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
 
-        const loan = {
-            ...req.body,
-            userEmail: userEmail.toLowerCase().trim(), 
-            status: "Pending",
-            feeStatus: "unpaid",
-            applicationDate: new Date(),
-        };
-
-        const result = await loanCollection.insertOne(loan);
-        
-        if (result.insertedId) {
-            // সফল হলে 201 Created স্ট্যাটাস পাঠানো উচিত
-            res.status(201).send({ success: true, insertedId: result.insertedId, message: "Loan application saved successfully." });
-        } else {
-             res.status(500).send({ success: false, message: "Database insert operation failed unexpectedly." });
-        }
-        
-    } catch (err) {
-        console.error("Error submitting loan application:", err.message);
-        res.status(500).send({ success: false, error: "Internal Server Error." });
+    // ✅ ADD THIS (NEW)
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid loan ID" });
     }
+
+    if (status !== "Cancelled") {
+      return res.status(400).json({ message: "Invalid status update" });
+    }
+
+    const result = await loanCollection.updateOne(
+      { _id: new ObjectId(id), status: "Pending" },
+      {
+        $set: {
+          status: "Cancelled",
+          cancelledAt: new Date(),
+        },
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        message: "Loan not found or cannot be cancelled",
+      });
+    }
+
+    res.json({ success: true, message: "Loan cancelled successfully" });
+  } catch (error) {
+    console.error("Cancel loan error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
 });
+
+
+// CREATE LOAN
+  app.post("/loan-applications", async (req, res) => {
+    try {
+      const { userEmail, loanTitle, loanAmount } = req.body;
+      if (!userEmail || !loanTitle || !loanAmount)
+        return res.status(400).send({ message: "Missing required fields." });
+
+      const loan = {
+        userEmail: userEmail.toLowerCase().trim(),
+        loanTitle,
+        loanAmount,
+        status: "Pending",
+        feeStatus: "unpaid",
+        applicationDate: new Date(),
+      };
+
+      const result = await loanCollection.insertOne(loan);
+      if (result.insertedId)
+        res.status(201).send({ success: true, insertedId: result.insertedId });
+      else res.status(500).send({ success: false, message: "Insert failed" });
+    } catch (err) {
+      console.error("Error submitting loan application:", err.message);
+      res.status(500).send({ success: false, error: "Internal Server Error." });
+    }
+  });
 
 // আপনার Express Server ফাইলে এই রুটটি যুক্ত করুন
 app.get("/loan-applications", async (req, res) => {
@@ -68,7 +95,7 @@ app.get("/loan-applications", async (req, res) => {
         if (!loanCollection) {
             return res.status(503).send({ message: "Database service unavailable." });
         }
-        
+
         const email = req.query.email;
         let query = {};
 
@@ -127,11 +154,50 @@ app.get("/loans/:id", async (req, res) => {
     }
   });
 
+  // Cancel loan application
+// Cancel loan application
+app.patch("/loan-applications/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid loan ID" });
+    }
+
+    if (status !== "Cancelled") {
+      return res.status(400).json({ message: "Invalid status update" });
+    }
+
+    // Correct collection variable
+    const result = await loanCollection.updateOne(
+      { _id: new ObjectId(id), status: "Pending" }, // শুধু Pending হলে cancel হবে
+      {
+        $set: {
+          status: "Cancelled",
+          cancelledAt: new Date(),
+        },
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        message: "Loan not found or cannot be cancelled",
+      });
+    }
+
+    res.json({ success: true, message: "Loan cancelled successfully" });
+  } catch (error) {
+    console.error("Cancel loan error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
   // STRIPE CHECKOUT SESSION
+// STRIPE CHECKOUT
   app.post("/create-checkout-session", async (req, res) => {
     try {
       const { loanId, loanTitle, email } = req.body;
-
       const session = await stripe.checkout.sessions.create({
         payment_method_types: ["card"],
         line_items: [
@@ -153,45 +219,57 @@ app.get("/loans/:id", async (req, res) => {
 
       res.send({ url: session.url });
     } catch (err) {
+      console.error("Stripe session error:", err);
       res.status(500).send({ error: err.message });
     }
   });
 
+
+
   // STRIPE WEBHOOK
-  app.post("/webhook", bodyParser.raw({ type: "application/json" }), async (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    let event;
+  app.post(
+    "/webhook",
+    bodyParser.raw({ type: "application/json" }),
+    async (req, res) => {
+      const sig = req.headers["stripe-signature"];
+      let event;
+      try {
+        event = stripe.webhooks.constructEvent(
+          req.body,
+          sig,
+          process.env.STRIPE_WEBHOOK_SECRET
+        );
+      } catch (err) {
+        console.log("Webhook signature failed:", err.message);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+      }
 
-    try {
-      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-    } catch (err) {
-      console.log("Webhook signature failed:", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      await loanCollection.updateOne(
-        { _id: new ObjectId(session.metadata.loanId) },
-        {
-          $set: {
-            feeStatus: "Paid",
-            payment: {
-              transactionId: session.payment_intent,
-              email: session.customer_email,
-              loanTitle: session.metadata.loanTitle,
-              amount: 10,
-              date: new Date(),
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object;
+        await loanCollection.updateOne(
+          { _id: new ObjectId(session.metadata.loanId) },
+          {
+            $set: {
+              feeStatus: "paid",
+              payment: {
+                transactionId: session.payment_intent,
+                email: session.customer_email,
+                loanTitle: session.metadata.loanTitle,
+                amount: session.amount_total / 100,
+                date: new Date(),
+              },
             },
-          },
-        }
-      );
-    }
+          }
+        );
+      }
 
-    res.json({ received: true });
-  });
+      res.json({ received: true });
+    }
+  );
 }
 
-run().catch(err => console.error(err));
+run().catch(console.error);
 
-app.listen(process.env.PORT || 4000, () => console.log(`Server running on port ${process.env.PORT || 4000}`));
+app.listen(process.env.PORT || 4000, () =>
+  console.log(`Server running on port ${process.env.PORT || 4000}`)
+);
