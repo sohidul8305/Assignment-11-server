@@ -195,34 +195,39 @@ app.patch("/loan-applications/:id", async (req, res) => {
 
   // STRIPE CHECKOUT SESSION
 // STRIPE CHECKOUT
-  app.post("/create-checkout-session", async (req, res) => {
-    try {
-      const { loanId, loanTitle, email } = req.body;
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        line_items: [
-          {
-            price_data: {
-              currency: "usd",
-              unit_amount: 1000,
-              product_data: { name: `Loan Fee - ${loanTitle}` },
-            },
-            quantity: 1,
-          },
-        ],
-        mode: "payment",
-        customer_email: email,
-        metadata: { loanId, loanTitle },
-        success_url: `${process.env.CLIENT_URL}/payment-success?loanId=${loanId}`,
-        cancel_url: `${process.env.CLIENT_URL}/myloans`,
-      });
+app.post("/create-checkout-session", async (req, res) => {
+  const { loanId, loanTitle, email } = req.body;
 
-      res.send({ url: session.url });
-    } catch (err) {
-      console.error("Stripe session error:", err);
-      res.status(500).send({ error: err.message });
-    }
-  });
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      mode: "payment",
+      customer_email: email,
+
+      line_items: [
+        {
+          price_data: {
+            currency: "bdt",
+            product_data: {
+              name: loanTitle,
+            },
+            unit_amount: 10, // application fee (100 BDT)
+          },
+          quantity: 1,
+        },
+      ],
+
+      // 🔥 এই লাইনটা সবচেয়ে গুরুত্বপূর্ণ
+      success_url: `${process.env.CLIENT_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.CLIENT_URL}/my-loans`,
+    });
+
+    res.send({ url: session.url });
+  } catch (error) {
+    res.status(500).send({ message: "Payment session create failed" });
+  }
+});
+
 
 
 
