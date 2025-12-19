@@ -63,6 +63,37 @@ app.patch("/loan-applications/:id", async (req, res) => {
 });
 
 
+app.post("/create-checkout-session", async (req, res) => {
+  const { loanId, loanTitle, email } = req.body;
+
+  const session = await stripe.checkout.sessions.create({
+    payment_method_types: ["card"],
+    mode: "payment",
+    customer_email: email,
+    line_items: [
+      {
+        price_data: {
+          currency: "usd",
+          product_data: { name: loanTitle },
+          unit_amount: 1000,
+        },
+        quantity: 1,
+      },
+    ],
+    metadata: {
+      loanId,
+      loanTitle,
+    },
+    // ✅ এখানে বসবে
+  success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-cancelled`,
+
+  });
+
+  res.send({ url: session.url });
+});
+
+
 // CREATE LOAN
   app.post("/loan-applications", async (req, res) => {
     try {
@@ -199,45 +230,49 @@ app.patch("/loan-applications/:id", async (req, res) => {
 
 
 // GET PAYMENT DETAILS BY SESSION ID
+// SIMPLE PAYMENT DETAILS (NO DB DEPENDENCY)
 app.get("/payment-details", async (req, res) => {
   try {
     const { session_id } = req.query;
 
     if (!session_id) {
-      return res.status(400).send({ message: "Session ID required" });
+      return res.status(400).send({ message: "Session ID missing" });
     }
 
-    // Stripe session retrieve
-    const session = await stripe.checkout.sessions.retrieve(session_id);
+    const session = await stripe.checkout.sessions.retrieve(
+      session_id,
+      {
+        expand: ["customer_details"],
+      }
+    );
 
-    if (!session?.metadata?.loanId) {
-      return res.status(404).send({ message: "Invalid payment session" });
-    }
-
-    const loan = await loanCollection.findOne({
-      _id: new ObjectId(session.metadata.loanId),
-    });
-
-    if (!loan || !loan.payment) {
-      return res.status(404).send({ message: "Payment not found" });
-    }
+    // 🔍 Debug (একবার দেখো)
+    console.log("Stripe session:", session);
 
     res.send({
-      transactionId: loan.payment.transactionId,
-      customerEmail: loan.payment.email,
-      loanTitle: loan.payment.loanTitle,
-      loanId: loan._id,
-      amount: loan.payment.amount,
+      transactionId: session.payment_intent,   // ✅ Transaction ID
+      trackingId: session.id,                  // ✅ Tracking ID
+      email:
+        session.customer_email ||
+        session.customer_details?.email ||     // ✅ REAL email
+        "N/A",
+      loanTitle: session.metadata?.loanTitle || "N/A",
+      amount: session.amount_total / 100,
+      currency: session.currency,
+      status: session.payment_status,
     });
-  } catch (error) {
-    console.error("Payment details error:", error);
-    res.status(500).send({ message: "Failed to load payment details" });
+  } catch (err) {
+    console.error("Payment details error:", err);
+    res.status(500).send({ message: "Failed to load payment info" });
   }
 });
 
 
-  // STRIPE WEBHOOK
-// STRIPE WEBHOOK
+
+
+
+
+ // ================= STRIPE WEBHOOK =================
 app.post(
   "/webhook",
   bodyParser.raw({ type: "application/json" }),
@@ -252,12 +287,14 @@ app.post(
         process.env.STRIPE_WEBHOOK_SECRET
       );
     } catch (err) {
-      console.log("Webhook signature failed:", err.message);
+      console.log("❌ Webhook signature failed:", err.message);
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
+
+      console.log("✅ Payment completed for loan:", session.metadata.loanId);
 
       await loanCollection.updateOne(
         { _id: new ObjectId(session.metadata.loanId) },
@@ -265,11 +302,14 @@ app.post(
           $set: {
             feeStatus: "paid",
             payment: {
-              transactionId: session.payment_intent,
+              transactionId: session.payment_intent, // ✅ Transaction ID
+              trackingId: session.id,                 // ✅ Session ID
               email: session.customer_email,
               loanTitle: session.metadata.loanTitle,
-              amount: 10, // Always 10 USD
-              date: new Date(),
+              amount: session.amount_total / 100,
+              currency: session.currency,
+              status: session.payment_status,
+              paidAt: new Date(),
             },
           },
         }
@@ -278,8 +318,8 @@ app.post(
 
     res.json({ received: true });
   }
-);
-}
+)};
+// ==================================================
 
 run().catch(console.error);
 
