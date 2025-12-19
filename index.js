@@ -102,7 +102,7 @@ app.get("/loan-applications", async (req, res) => {
         if (email) {
             // ইমেল কোয়েরি প্যারামিটার ব্যবহার করে ডেটা ফিল্টার করা হচ্ছে
             query = { userEmail: email };
-        } 
+        }
         // আপনি যদি কোনো Admin Route না রাখেন, তবে এটি শুধু ইউজার ইমেল ফিল্টার করবে।
 
         const loans = await loanCollection.find(query).toArray();
@@ -194,83 +194,91 @@ app.patch("/loan-applications/:id", async (req, res) => {
 });
 
   // STRIPE CHECKOUT SESSION
-// STRIPE CHECKOUT
-app.post("/create-checkout-session", async (req, res) => {
-  const { loanId, loanTitle, email } = req.body;
 
+
+
+
+// GET PAYMENT DETAILS BY SESSION ID
+app.get("/payment-details", async (req, res) => {
   try {
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      mode: "payment",
-      customer_email: email,
+    const { session_id } = req.query;
 
-      line_items: [
-        {
-          price_data: {
-            currency: "bdt",
-            product_data: {
-              name: loanTitle,
-            },
-            unit_amount: 10, // application fee (100 BDT)
-          },
-          quantity: 1,
-        },
-      ],
+    if (!session_id) {
+      return res.status(400).send({ message: "Session ID required" });
+    }
 
-      // 🔥 এই লাইনটা সবচেয়ে গুরুত্বপূর্ণ
-      success_url: `${process.env.CLIENT_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.CLIENT_URL}/my-loans`,
+    // Stripe session retrieve
+    const session = await stripe.checkout.sessions.retrieve(session_id);
+
+    if (!session?.metadata?.loanId) {
+      return res.status(404).send({ message: "Invalid payment session" });
+    }
+
+    const loan = await loanCollection.findOne({
+      _id: new ObjectId(session.metadata.loanId),
     });
 
-    res.send({ url: session.url });
+    if (!loan || !loan.payment) {
+      return res.status(404).send({ message: "Payment not found" });
+    }
+
+    res.send({
+      transactionId: loan.payment.transactionId,
+      customerEmail: loan.payment.email,
+      loanTitle: loan.payment.loanTitle,
+      loanId: loan._id,
+      amount: loan.payment.amount,
+    });
   } catch (error) {
-    res.status(500).send({ message: "Payment session create failed" });
+    console.error("Payment details error:", error);
+    res.status(500).send({ message: "Failed to load payment details" });
   }
 });
 
 
-
-
   // STRIPE WEBHOOK
-  app.post(
-    "/webhook",
-    bodyParser.raw({ type: "application/json" }),
-    async (req, res) => {
-      const sig = req.headers["stripe-signature"];
-      let event;
-      try {
-        event = stripe.webhooks.constructEvent(
-          req.body,
-          sig,
-          process.env.STRIPE_WEBHOOK_SECRET
-        );
-      } catch (err) {
-        console.log("Webhook signature failed:", err.message);
-        return res.status(400).send(`Webhook Error: ${err.message}`);
-      }
+// STRIPE WEBHOOK
+app.post(
+  "/webhook",
+  bodyParser.raw({ type: "application/json" }),
+  async (req, res) => {
+    const sig = req.headers["stripe-signature"];
+    let event;
 
-      if (event.type === "checkout.session.completed") {
-        const session = event.data.object;
-        await loanCollection.updateOne(
-          { _id: new ObjectId(session.metadata.loanId) },
-          {
-            $set: {
-              feeStatus: "paid",
-              payment: {
-                transactionId: session.payment_intent,
-                email: session.customer_email,
-                loanTitle: session.metadata.loanTitle,
-                amount: session.amount_total / 100,
-                date: new Date(),
-              },
-            },
-          }
-        );
-      }
-
-      res.json({ received: true });
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.log("Webhook signature failed:", err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
     }
-  );
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+
+      await loanCollection.updateOne(
+        { _id: new ObjectId(session.metadata.loanId) },
+        {
+          $set: {
+            feeStatus: "paid",
+            payment: {
+              transactionId: session.payment_intent,
+              email: session.customer_email,
+              loanTitle: session.metadata.loanTitle,
+              amount: 10, // Always 10 USD
+              date: new Date(),
+            },
+          },
+        }
+      );
+    }
+
+    res.json({ received: true });
+  }
+);
 }
 
 run().catch(console.error);
