@@ -144,6 +144,9 @@ app.get("/loan-applications", async (req, res) => {
         res.status(500).send({ message: "Failed to fetch loan data." });
     }
 });
+
+
+
   // GET LOANS (list)
   app.get("/loans", async (req, res) => {
     try {
@@ -224,6 +227,28 @@ app.patch("/loan-applications/:id", async (req, res) => {
   }
 });
 
+
+
+// mark loan as paid
+app.post("/mark-loan-paid/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid loan ID" });
+
+    const result = await loanCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { feeStatus: "paid" } }
+    );
+
+    if (result.matchedCount === 0) return res.status(404).send({ message: "Loan not found" });
+
+    res.send({ success: true, message: "Loan feeStatus updated to paid" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
   // STRIPE CHECKOUT SESSION
 
 
@@ -272,7 +297,12 @@ app.get("/payment-details", async (req, res) => {
 
 
 
- // ================= STRIPE WEBHOOK =================
+
+
+
+/* =======================
+   🔥 STRIPE WEBHOOK (FIRST)
+======================= */
 app.post(
   "/webhook",
   bodyParser.raw({ type: "application/json" }),
@@ -287,39 +317,34 @@ app.post(
         process.env.STRIPE_WEBHOOK_SECRET
       );
     } catch (err) {
-      console.log("❌ Webhook signature failed:", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
+      console.error("❌ Webhook Error:", err.message);
+      return res.status(400).send("Webhook Error");
     }
 
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
+      const loanId = session.metadata.loanId;
 
-      console.log("✅ Payment completed for loan:", session.metadata.loanId);
+      console.log("✅ WEBHOOK HIT | Loan:", loanId);
 
       await loanCollection.updateOne(
-        { _id: new ObjectId(session.metadata.loanId) },
-        {
-          $set: {
-            feeStatus: "paid",
-            payment: {
-              transactionId: session.payment_intent, // ✅ Transaction ID
-              trackingId: session.id,                 // ✅ Session ID
-              email: session.customer_email,
-              loanTitle: session.metadata.loanTitle,
-              amount: session.amount_total / 100,
-              currency: session.currency,
-              status: session.payment_status,
-              paidAt: new Date(),
-            },
-          },
-        }
+        { _id: new ObjectId(loanId) },
+        { $set: { feeStatus: "paid" } }
       );
     }
 
-    res.json({ received: true });
+    res.sendStatus(200);
   }
 )};
-// ==================================================
+
+/* =======================
+   NORMAL MIDDLEWARE
+======================= */
+app.use(cors());
+app.use(express.json());
+
+
+
 
 run().catch(console.error);
 
