@@ -207,8 +207,9 @@ async function run() {
         },
       ],
       metadata: { loanId, loanTitle },
-      success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-cancelled`,
+success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+cancel_url: `${process.env.CLIENT_URL}/dashboard/my-loans`,
+
     });
 
     res.send({ url: session.url });
