@@ -20,8 +20,9 @@ let paymentsCollection;
 
 async function run() {
   await client.connect();
-  loanCollection = client.db(process.env.DB_NAME).collection("loans");
-  const paymentsCollection = client.db("loanDB").collection("payments"); // ✅ add this
+  const db = client.db(process.env.DB_NAME);
+  loanCollection = db.collection("loans");
+  paymentsCollection = db.collection("payments");
 
   console.log("✅ MongoDB connected");
 
@@ -38,9 +39,8 @@ async function run() {
         !newLoan.maxLimit ||
         !newLoan.shortDesc ||
         !newLoan.image
-      ) {
+      )
         return res.status(400).send({ success: false, error: "Missing required fields" });
-      }
 
       newLoan.interest = Number(newLoan.interest);
       newLoan.maxLimit = Number(newLoan.maxLimit);
@@ -126,17 +126,18 @@ async function run() {
   });
 
   // ======================
-  // GET ALL LOAN APPLICATIONS
+  // GET LOAN APPLICATIONS (by email)
   // ======================
   app.get("/loan-applications", async (req, res) => {
     try {
       const email = req.query.email;
-      const query = email ? { userEmail: email } : {};
-      const loans = await loanCollection.find(query).toArray();
+      if (!email) return res.status(400).send({ message: "Email missing" });
+
+      const loans = await loanCollection.find({ userEmail: email.toLowerCase().trim() }).toArray();
       res.send(loans);
     } catch (err) {
-      console.error("Error fetching loan applications:", err.message);
-      res.status(500).send({ message: "Failed to fetch loan data." });
+      console.error("Error fetching loan applications:", err);
+      res.status(500).send({ message: "Server error" });
     }
   });
 
@@ -156,7 +157,11 @@ async function run() {
       if (status === "Approved") updateFields.approvedAt = new Date();
       if (status === "Cancelled") updateFields.cancelledAt = new Date();
 
-      const result = await loanCollection.updateOne({ _id: new ObjectId(id) }, { $set: updateFields });
+      const result = await loanCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updateFields }
+      );
+
       if (result.matchedCount === 0)
         return res.status(404).json({ message: "Loan application not found" });
 
@@ -190,7 +195,7 @@ async function run() {
   });
 
   // ======================
-  // STRIPE CHECKOUT SESSION
+  // CREATE STRIPE CHECKOUT SESSION
   // ======================
   app.post("/create-checkout-session", async (req, res) => {
     const { loanId, loanTitle, email } = req.body;
@@ -210,44 +215,32 @@ async function run() {
         },
       ],
       metadata: { loanId, loanTitle },
-success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-cancelled`,
     });
 
     res.send({ url: session.url });
   });
 
+  // ======================
+  // GET PAYMENT INFO BY LOAN ID
+  // ======================
+  app.get("/payment-info/:loanId", async (req, res) => {
+    try {
+      const { loanId } = req.params;
+      if (!ObjectId.isValid(loanId)) return res.status(400).send({ message: "Invalid loan ID" });
 
-// ======================
-// GET PAYMENT DETAILS DIRECTLY FROM STRIPE
-// ======================
-app.get("/payment-details", async (req, res) => {
-  try {
-    const sessionId = req.query.session_id;
-    if (!sessionId) {
-      return res.status(400).json({ message: "Session ID missing" });
+      const payment = await paymentsCollection.findOne({ loanId });
+      if (!payment) return res.status(404).send({ message: "Payment info not found" });
+
+      res.send(payment);
+    } catch (err) {
+      console.error("Payment info fetch error:", err);
+      res.status(500).send({ message: "Failed to fetch payment info" });
     }
+  });
 
-    // 🔥 Stripe থেকে session আনছি
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-
-    res.json({
-      transactionId: session.id,
-      email: session.customer_email,
-      amount: session.amount_total / 100,
-      currency: session.currency,
-      status: session.payment_status,
-      loanTitle: session.metadata?.loanTitle || "N/A",
-    });
-  } catch (err) {
-    console.error("Stripe fetch error:", err.message);
-    res.status(500).json({ message: "Payment fetch failed" });
-  }
-});
-
-
-
- // ======================
+  // ======================
   // STRIPE WEBHOOK
   // ======================
   app.post(
@@ -275,31 +268,34 @@ app.get("/payment-details", async (req, res) => {
         console.log("✅ WEBHOOK HIT | Loan:", loanId);
 
         try {
-          // Update loan: mark as paid + save sessionId + amount + currency
+          // Mark loan as paid
           await loanCollection.updateOne(
             { _id: new ObjectId(loanId) },
-            {
-              $set: {
-                feeStatus: "paid",
-                sessionId: session.id,
-                amount: session.amount_total / 100,
-                currency: session.currency,
-              },
-            }
+            { $set: { feeStatus: "paid" } }
           );
 
-          console.log("✅ Loan updated with payment info:", session.id);
+          // Save payment details
+          await paymentsCollection.insertOne({
+            sessionId: session.id,
+            loanId,
+            loanTitle: session.metadata.loanTitle,
+            email: session.customer_email,
+            amount: session.amount_total / 100,
+            currency: session.currency,
+            status: session.payment_status,
+            createdAt: new Date(),
+          });
+
+          console.log("✅ Payment saved for session:", session.id);
         } catch (err) {
-          console.error("❌ Error updating loan payment:", err);
+          console.error("❌ Error saving payment:", err);
         }
       }
 
       res.sendStatus(200);
     }
-  )};
-
-
-
+  );
+}
 
 run().catch(console.error);
 
