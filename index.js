@@ -16,10 +16,13 @@ const uri = `mongodb+srv://${process.env.DB_USER}:${encodeURIComponent(
 
 const client = new MongoClient(uri);
 let loanCollection;
+let paymentsCollection;
 
 async function run() {
   await client.connect();
   loanCollection = client.db(process.env.DB_NAME).collection("loans");
+  const paymentsCollection = client.db("loanDB").collection("payments"); // ✅ add this
+
   console.log("✅ MongoDB connected");
 
   // ======================
@@ -208,14 +211,43 @@ async function run() {
       ],
       metadata: { loanId, loanTitle },
 success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-cancel_url: `${process.env.CLIENT_URL}/dashboard/my-loans`,
-
+      cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-cancelled`,
     });
 
     res.send({ url: session.url });
   });
 
-  // ======================
+
+// ======================
+// GET PAYMENT DETAILS DIRECTLY FROM STRIPE
+// ======================
+app.get("/payment-details", async (req, res) => {
+  try {
+    const sessionId = req.query.session_id;
+    if (!sessionId) {
+      return res.status(400).json({ message: "Session ID missing" });
+    }
+
+    // 🔥 Stripe থেকে session আনছি
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    res.json({
+      transactionId: session.id,
+      email: session.customer_email,
+      amount: session.amount_total / 100,
+      currency: session.currency,
+      status: session.payment_status,
+      loanTitle: session.metadata?.loanTitle || "N/A",
+    });
+  } catch (err) {
+    console.error("Stripe fetch error:", err.message);
+    res.status(500).json({ message: "Payment fetch failed" });
+  }
+});
+
+
+
+ // ======================
   // STRIPE WEBHOOK
   // ======================
   app.post(
@@ -226,7 +258,11 @@ cancel_url: `${process.env.CLIENT_URL}/dashboard/my-loans`,
       let event;
 
       try {
-        event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+        event = stripe.webhooks.constructEvent(
+          req.body,
+          sig,
+          process.env.STRIPE_WEBHOOK_SECRET
+        );
       } catch (err) {
         console.error("❌ Webhook Error:", err.message);
         return res.status(400).send("Webhook Error");
@@ -238,16 +274,32 @@ cancel_url: `${process.env.CLIENT_URL}/dashboard/my-loans`,
 
         console.log("✅ WEBHOOK HIT | Loan:", loanId);
 
-        await loanCollection.updateOne(
-          { _id: new ObjectId(loanId) },
-          { $set: { feeStatus: "paid" } }
-        );
+        try {
+          // Update loan: mark as paid + save sessionId + amount + currency
+          await loanCollection.updateOne(
+            { _id: new ObjectId(loanId) },
+            {
+              $set: {
+                feeStatus: "paid",
+                sessionId: session.id,
+                amount: session.amount_total / 100,
+                currency: session.currency,
+              },
+            }
+          );
+
+          console.log("✅ Loan updated with payment info:", session.id);
+        } catch (err) {
+          console.error("❌ Error updating loan payment:", err);
+        }
       }
 
       res.sendStatus(200);
     }
-  );
-}
+  )};
+
+
+
 
 run().catch(console.error);
 
