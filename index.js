@@ -23,6 +23,7 @@ async function run() {
   const db = client.db(process.env.DB_NAME);
   loanCollection = db.collection("loans");
   paymentsCollection = db.collection("payments");
+  userCollection = db.collection("users");
 
   console.log("✅ MongoDB connected");
 
@@ -99,65 +100,193 @@ async function run() {
     }
   });
 
- app.get("/loan-applications", async (req, res) => {
+
+
+app.get("/loan-applications", async (req, res) => {
+  const loans = await loanCollection.find(filter).toArray();
+  const safeLoans = loans.map((loan) => ({
+    _id: loan._id,
+    borrowerName: loan.borrowerName || "",
+    userEmail: loan.userEmail || "",
+    loanTitle: loan.loanTitle || "",
+    loanAmount: loan.loanAmount || 0,
+    applicationDate: loan.applicationDate || null,
+    status: loan.status || "Pending",
+    approvedAt: loan.approvedAt || null,
+  }));
+  res.json(safeLoans);
+});
+
+
+// ======================
+// UPDATE USER (Role / Suspend)
+// ======================
+app.patch("/users/:id", async (req, res) => {
   try {
-    const { email, status } = req.query;
-    const filter = {};
-    if (email) filter.userEmail = email.toLowerCase().trim();
-    if (status) filter.status = status;
+    const { id } = req.params;
+    const { role, status, suspendReason } = req.body;
 
-    const loans = await loanCollection.find(filter).toArray();
+    if (!ObjectId.isValid(id))
+      return res.status(400).json({ message: "Invalid user ID" });
 
-    // সরাসরি userEmail এবং borrowerName return করবে
-    const safeLoans = loans.map((loan) => ({
-      _id: loan._id,
-      borrowerName: loan.borrowerName || "",
-      userEmail: loan.userEmail || "",
-      loanTitle: loan.loanTitle || "",
-      loanAmount: loan.loanAmount || 0,
-      applicationDate: loan.applicationDate || null,
-      status: loan.status || "Pending",
-      approvedAt: loan.approvedAt || null,
-    }));
+    const updateFields = {};
+    if (role) updateFields.role = role;
+    if (status) updateFields.status = status;
+    if (suspendReason) updateFields.suspendReason = suspendReason;
 
-    res.json(safeLoans);
+    const result = await userCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateFields }
+    );
+
+    if (result.matchedCount === 0)
+      return res.status(404).json({ message: "User not found" });
+
+    res.json({ success: true, message: "User updated successfully" });
   } catch (err) {
-    console.error("Error fetching loan applications:", err);
-    res.status(500).json({ message: "Failed to fetch loan applications" });
+    console.error("Update user error:", err);
+    res.status(500).json({ success: false, message: err.message });
   }
 });
+
+
+app.delete("/loans/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id))
+      return res.status(400).send({ success: false, message: "Invalid loan ID" });
+
+    const result = await loanCollection.deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0)
+      return res.status(404).send({ success: false, message: "Loan not found" });
+
+    res.send({ success: true, message: "Loan deleted successfully" });
+  } catch (err) {
+    console.error("Delete loan error:", err);
+    res.status(500).send({ success: false, error: err.message });
+  }
+});
+
+ // GET ALL LOAN APPLICATIONS
+  app.get("/loan-applications", async (req, res) => {
+    try {
+      const { status } = req.query;
+      const filter = {};
+      if (status) filter.status = status;
+
+      const loans = await loanCollection.find(filter).toArray();
+
+      res.json(loans);
+    } catch (err) {
+      console.error("Fetch loan applications error:", err);
+      res.status(500).json({ message: "Failed to fetch loan applications" });
+    }
+  });
+
+// ======================
+// UPDATE LOAN
+// ======================
+app.patch("/loans/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body.updates || req.body; // <-- handle frontend 'updates' key
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ success: false, message: "Invalid loan ID" });
+    }
+
+    // Logging for debug
+    console.log("Updating loan:", id, updates);
+
+    const result = await loanCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updates }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ success: false, message: "Loan not found" });
+    }
+
+    res.send({ success: true, message: "Loan updated successfully" });
+  } catch (err) {
+    console.error("Update loan error:", err);
+    res.status(500).send({ success: false, error: err.message });
+  }
+});
+
+
+
+
+
+
+
+
+// GET ALL USERS
+// GET ALL USERS FROM LOANS
+// GET /users API (backend)
+app.get("/users", async (req, res) => {
+  try {
+    const users = await loanCollection
+      .aggregate([
+        {
+          $group: {
+            _id: "$userEmail",
+            name: { $first: "$borrowerName" }, // Name field
+            email: { $first: "$userEmail" },
+            role: { $first: "borrower" },
+          },
+        },
+        { $project: { _id: 0, name: 1, email: 1, role: 1 } },
+      ])
+      .toArray();
+
+    res.json(users);
+  } catch (err) {
+    console.error("Error fetching users from loans:", err);
+    res.status(500).send({ message: "Failed to fetch users" });
+  }
+});
+
+
+
+
+
+
 
 
   // ======================
   // UPDATE LOAN APPLICATION STATUS
   // ======================
-  app.patch("/loan-applications/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { status } = req.body;
+// UPDATE LOAN
+app.patch("/loans/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
 
-      if (!ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid loan ID" });
-      if (!["Approved", "Rejected", "Cancelled"].includes(status))
-        return res.status(400).json({ message: "Invalid status" });
-
-      const updateFields = { status };
-      if (status === "Approved") updateFields.approvedAt = new Date();
-      if (status === "Cancelled") updateFields.cancelledAt = new Date();
-
-      const result = await loanCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updateFields }
-      );
-
-      if (result.matchedCount === 0)
-        return res.status(404).json({ message: "Loan application not found" });
-
-      res.json({ message: `Loan ${status.toLowerCase()} successfully` });
-    } catch (err) {
-      console.error("Update loan application error:", err);
-      res.status(500).json({ message: "Server error" });
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ success: false, message: "Invalid loan ID" });
     }
-  });
+
+    // Logging req.body for debug
+    console.log("Updating loan:", id, updates);
+
+    const result = await loanCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updates }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ success: false, message: "Loan not found" });
+    }
+
+    res.send({ success: true, message: "Loan updated successfully" });
+  } catch (err) {
+    console.error("Update loan error:", err);
+    res.status(500).send({ success: false, error: err.message });
+  }
+});
+
 
   // ======================
   // Confirm payment
