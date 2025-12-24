@@ -46,6 +46,8 @@ async function run() {
       newLoan.maxLimit = Number(newLoan.maxLimit);
       newLoan.emiPlans = newLoan.emiPlans || [];
       newLoan.createdAt = new Date();
+      newLoan.status = "Pending";
+      newLoan.feeStatus = "unpaid";
 
       const result = await loanCollection.insertOne(newLoan);
       res.send({ success: !!result.insertedId, loanId: result.insertedId });
@@ -56,7 +58,7 @@ async function run() {
   });
 
   // ======================
-  // GET ALL LOANS
+  // GET ALL LOANS (Manager)
   // ======================
   app.get("/loans", async (req, res) => {
     try {
@@ -68,45 +70,17 @@ async function run() {
   });
 
   // ======================
-  // GET LOAN BY ID
-  // ======================
-  app.get("/loans/:id", async (req, res) => {
-    try {
-      const { id } = req.params;
-      if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
-
-      const loan = await loanCollection.findOne({ _id: new ObjectId(id) });
-      if (!loan) return res.status(404).send({ message: "Loan not found" });
-
-      res.send(loan);
-    } catch (err) {
-      res.status(500).send({ message: "Server error", error: err.message });
-    }
-  });
-
-  // ======================
-  // DELETE LOAN
-  // ======================
-  app.delete("/loans/:id", async (req, res) => {
-    try {
-      await loanCollection.deleteOne({ _id: new ObjectId(req.params.id) });
-      res.send({ success: true });
-    } catch (err) {
-      res.status(500).send({ success: false, error: err.message });
-    }
-  });
-
-  // ======================
-  // CREATE LOAN APPLICATION (USER)
+  // CREATE LOAN APPLICATION (User)
   // ======================
   app.post("/loan-applications", async (req, res) => {
     try {
-      const { userEmail, loanTitle, loanAmount } = req.body;
-      if (!userEmail || !loanTitle || !loanAmount)
+      const { userEmail, borrowerName, loanTitle, loanAmount } = req.body;
+      if (!userEmail || !borrowerName || !loanTitle || !loanAmount)
         return res.status(400).send({ message: "Missing required fields." });
 
       const loan = {
         userEmail: userEmail.toLowerCase().trim(),
+        borrowerName,
         loanTitle,
         loanAmount,
         status: "Pending",
@@ -125,24 +99,37 @@ async function run() {
     }
   });
 
-  // ======================
-  // GET LOAN APPLICATIONS (by email)
-  // ======================
-  app.get("/loan-applications", async (req, res) => {
-    try {
-      const email = req.query.email;
-      if (!email) return res.status(400).send({ message: "Email missing" });
+ app.get("/loan-applications", async (req, res) => {
+  try {
+    const { email, status } = req.query;
+    const filter = {};
+    if (email) filter.userEmail = email.toLowerCase().trim();
+    if (status) filter.status = status;
 
-      const loans = await loanCollection.find({ userEmail: email.toLowerCase().trim() }).toArray();
-      res.send(loans);
-    } catch (err) {
-      console.error("Error fetching loan applications:", err);
-      res.status(500).send({ message: "Server error" });
-    }
-  });
+    const loans = await loanCollection.find(filter).toArray();
+
+    // সরাসরি userEmail এবং borrowerName return করবে
+    const safeLoans = loans.map((loan) => ({
+      _id: loan._id,
+      borrowerName: loan.borrowerName || "",
+      userEmail: loan.userEmail || "",
+      loanTitle: loan.loanTitle || "",
+      loanAmount: loan.loanAmount || 0,
+      applicationDate: loan.applicationDate || null,
+      status: loan.status || "Pending",
+      approvedAt: loan.approvedAt || null,
+    }));
+
+    res.json(safeLoans);
+  } catch (err) {
+    console.error("Error fetching loan applications:", err);
+    res.status(500).json({ message: "Failed to fetch loan applications" });
+  }
+});
+
 
   // ======================
-  // UPDATE LOAN APPLICATION STATUS (APPROVE / REJECT / CANCEL)
+  // UPDATE LOAN APPLICATION STATUS
   // ======================
   app.patch("/loan-applications/:id", async (req, res) => {
     try {
@@ -173,128 +160,33 @@ async function run() {
   });
 
   // ======================
-  // MARK LOAN AS PAID
+  // Confirm payment
   // ======================
-  app.post("/mark-loan-paid/:id", async (req, res) => {
+  app.post("/confirm-payment", async (req, res) => {
     try {
-      const { id } = req.params;
-      if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid loan ID" });
+      const { sessionId } = req.body;
+      if (!sessionId) return res.status(400).send({ message: "Session ID missing" });
 
-      const result = await loanCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { feeStatus: "paid" } }
+      const payment = await paymentsCollection.findOne({ sessionId });
+      if (!payment) return res.status(404).send({ message: "Payment not found" });
+
+      const loanId = payment.loanId;
+
+      await loanCollection.updateOne(
+        { _id: new ObjectId(loanId) },
+        { $set: { feeStatus: "paid", status: "Approved" } }
       );
 
-      if (result.matchedCount === 0) return res.status(404).send({ message: "Loan not found" });
-
-      res.send({ success: true, message: "Loan feeStatus updated to paid" });
+      res.send({ success: true, message: "Loan payment confirmed" });
     } catch (err) {
-      console.error(err);
-      res.status(500).send({ message: "Server error" });
+      console.error("Confirm payment error:", err);
+      res.status(500).send({ success: false, error: err.message });
     }
   });
 
   // ======================
-  // CREATE STRIPE CHECKOUT SESSION
+  // Stripe checkout & webhook can stay same
   // ======================
-  app.post("/create-checkout-session", async (req, res) => {
-    const { loanId, loanTitle, email } = req.body;
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      mode: "payment",
-      customer_email: email,
-      line_items: [
-        {
-          price_data: {
-            currency: "usd",
-            product_data: { name: loanTitle },
-            unit_amount: 1000,
-          },
-          quantity: 1,
-        },
-      ],
-      metadata: { loanId, loanTitle },
-      success_url: `${process.env.CLIENT_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.CLIENT_URL}/dashboard/payment-cancelled`,
-    });
-
-    res.send({ url: session.url });
-  });
-
-  // ======================
-  // GET PAYMENT INFO BY LOAN ID
-  // ======================
-  app.get("/payment-info/:loanId", async (req, res) => {
-    try {
-      const { loanId } = req.params;
-      if (!ObjectId.isValid(loanId)) return res.status(400).send({ message: "Invalid loan ID" });
-
-      const payment = await paymentsCollection.findOne({ loanId });
-      if (!payment) return res.status(404).send({ message: "Payment info not found" });
-
-      res.send(payment);
-    } catch (err) {
-      console.error("Payment info fetch error:", err);
-      res.status(500).send({ message: "Failed to fetch payment info" });
-    }
-  });
-
-  // ======================
-  // STRIPE WEBHOOK
-  // ======================
-  app.post(
-    "/webhook",
-    bodyParser.raw({ type: "application/json" }),
-    async (req, res) => {
-      const sig = req.headers["stripe-signature"];
-      let event;
-
-      try {
-        event = stripe.webhooks.constructEvent(
-          req.body,
-          sig,
-          process.env.STRIPE_WEBHOOK_SECRET
-        );
-      } catch (err) {
-        console.error("❌ Webhook Error:", err.message);
-        return res.status(400).send("Webhook Error");
-      }
-
-      if (event.type === "checkout.session.completed") {
-        const session = event.data.object;
-        const loanId = session.metadata.loanId;
-
-        console.log("✅ WEBHOOK HIT | Loan:", loanId);
-
-        try {
-          // Mark loan as paid
-          await loanCollection.updateOne(
-            { _id: new ObjectId(loanId) },
-            { $set: { feeStatus: "paid" } }
-          );
-
-          // Save payment details
-          await paymentsCollection.insertOne({
-            sessionId: session.id,
-            loanId,
-            loanTitle: session.metadata.loanTitle,
-            email: session.customer_email,
-            amount: session.amount_total / 100,
-            currency: session.currency,
-            status: session.payment_status,
-            createdAt: new Date(),
-          });
-
-          console.log("✅ Payment saved for session:", session.id);
-        } catch (err) {
-          console.error("❌ Error saving payment:", err);
-        }
-      }
-
-      res.sendStatus(200);
-    }
-  );
 }
 
 run().catch(console.error);
